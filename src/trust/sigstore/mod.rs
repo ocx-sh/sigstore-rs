@@ -67,11 +67,19 @@ impl SigstoreTrustRoot {
 
     /// Constructs a new trust root backed by the Sigstore Public Good Instance.
     pub async fn new(cache_dir: Option<&Path>) -> Result<Self> {
+        Self::new_with_client(cache_dir, reqwest::Client::new()).await
+    }
+
+    /// Constructs a new trust root backed by the Sigstore Public Good Instance,
+    /// fetching the TUF repository through `client`.
+    pub async fn new_with_client(
+        cache_dir: Option<&Path>,
+        client: reqwest::Client,
+    ) -> Result<Self> {
         // These are statically defined and should always parse correctly.
         let metadata_base = url::Url::parse(constants::SIGSTORE_METADATA_BASE)?;
         let target_base = url::Url::parse(constants::SIGSTORE_TARGET_BASE)?;
 
-        let client = reqwest::Client::new();
         let transport = transport::ReqwestTransport::new(client);
 
         let repository = tough::RepositoryLoader::new(
@@ -370,6 +378,34 @@ mod tests {
         let root = trust_root(cache).await;
 
         verify(&root, cache);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn trust_root_fetch_with_unreachable_client(cache_dir: TempDir) {
+        // Bind then drop a port so every dial to the pinned address is refused.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("cannot bind a port");
+        let addr = listener
+            .local_addr()
+            .expect("cannot read the bound address");
+        drop(listener);
+
+        let host = url::Url::parse(constants::SIGSTORE_METADATA_BASE)
+            .expect("metadata base is not a URL")
+            .host_str()
+            .expect("metadata base has no host")
+            .to_owned();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .resolve(&host, addr)
+            .build()
+            .expect("cannot build a reqwest client");
+
+        let result = SigstoreTrustRoot::new_with_client(Some(cache_dir.path()), client).await;
+        assert!(
+            result.is_err(),
+            "the TUF fetch bypassed the injected client"
+        );
     }
 
     #[rstest]
